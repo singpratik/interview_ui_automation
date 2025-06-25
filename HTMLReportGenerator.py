@@ -1,123 +1,33 @@
 import json
-import os
-import logging
 from datetime import datetime
-import html
+from typing import List, Dict, Any
 
-# Configure logging
-logger = logging.getLogger(__name__)
-
-# Custom JSON encoder for datetime objects
-class DateTimeEncoder(json.JSONEncoder):
-    def default(self, o):
-        if isinstance(o, datetime):
-            return o.isoformat()
-        return super().default(o)
-
-class HTMLReportGenerator:
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
-        self.api_calls = []
+def generate_html_report(api_calls: List[Dict[str, Any]], filename: str = 'api_calls_report.html') -> str:
+    """Generate HTML report from API calls data"""
+    # Calculate statistics
+    total_calls = len(api_calls)
+    successful_calls = len([call for call in api_calls if 200 <= call['status'] < 300])
+    error_calls = len([call for call in api_calls if call['status'] >= 400])
     
-    def generate_report(self, api_calls, filename='api_calls_report.html'):
-        """Generate a comprehensive HTML report of all API calls"""
-        try:
-            self.api_calls = api_calls  # Store API calls for later use
-            abs_path = os.path.abspath(filename)
-            logger.info(f"Generating report to: {abs_path}")
-            logger.info(f"API calls count: {len(api_calls)}")
-            
-            html_content = self._create_html_report()
-            
-            with open(abs_path, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-                f.flush()  # Force immediate write
-                os.fsync(f.fileno())  # Ensure OS buffer flush
-                logger.debug("File write completed")
-            
-            # Verify file creation
-            if os.path.exists(abs_path):
-                file_size = os.path.getsize(abs_path)
-                logger.info(f"✅ HTML report created: {abs_path} ({file_size} bytes)")
-                return True
-            else:
-                logger.error(f"❌ File creation failed: {abs_path}")
-                return False
-        except Exception as e:
-            logger.error(f"Error generating HTML report: {str(e)}")
-            return False
-    
-    def _sanitize_for_json(self, obj):
-        """Recursively sanitize object for JSON serialization"""
-        if isinstance(obj, dict):
-            return {k: self._sanitize_for_json(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [self._sanitize_for_json(item) for item in obj]
-        elif isinstance(obj, str):
-            # Remove or replace problematic characters and limit length
-            sanitized = obj.replace('\x00', '').replace('\b', '').replace('\f', '')
-            sanitized = sanitized.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-            # Limit string length to prevent huge JSON
-            if len(sanitized) > 10000:
-                sanitized = sanitized[:10000] + "... [truncated]"
-            return sanitized
-        elif isinstance(obj, datetime):
-            return obj.isoformat()
-        elif obj is None:
-            return None
-        elif isinstance(obj, (int, float, bool)):
-            return obj
+    # Group by status codes and methods
+    status_counts = {}
+    method_counts = {'GET': 0, 'POST': 0, 'PUT': 0, 'DELETE': 0, 'PATCH': 0, 'OPTIONS': 0, 'HEAD': 0}
+    for call in api_calls:
+        status_counts[call['status']] = status_counts.get(call['status'], 0) + 1
+        method = call['method'].upper()
+        if method in method_counts:
+            method_counts[method] += 1
         else:
-            # Convert unknown types to string
-            return str(obj)
+            method_counts[method] = 1
     
-    def _create_html_report(self):
-        """Create the HTML content for the API report"""
-        # Ensure we have data
-        if not self.api_calls:
-            self.api_calls = []
-        
-        # Calculate statistics
-        total_calls = len(self.api_calls)
-        successful_calls = len([call for call in self.api_calls if 200 <= call.get('status', 0) < 300])
-        error_calls = len([call for call in self.api_calls if call.get('status', 0) >= 400])
-        
-        # Group by status codes and methods
-        status_counts = {}
-        method_counts = {'GET': 0, 'POST': 0, 'PUT': 0, 'DELETE': 0, 'PATCH': 0, 'OPTIONS': 0, 'HEAD': 0}
-        
-        for call in self.api_calls:
-            status = call.get('status', 0)
-            status_counts[status] = status_counts.get(status, 0) + 1
-            
-            method = call.get('method', 'UNKNOWN').upper()
-            if method in method_counts:
-                method_counts[method] += 1
-            else:
-                method_counts[method] = 1
-        
-        # Sanitize and create JSON data for JavaScript
-        try:
-            sanitized_api_calls = self._sanitize_for_json(self.api_calls)
-            api_calls_json = json.dumps(sanitized_api_calls, indent=2, cls=DateTimeEncoder, ensure_ascii=False)
-            # Escape for safe HTML embedding
-            api_calls_json = html.escape(api_calls_json)
-        except Exception as e:
-            logger.error(f"Error serializing API calls to JSON: {e}")
-            api_calls_json = "[]"  # Fallback to empty array
-        
-        # Generate method options safely
-        method_options = ""
-        for method in sorted(method_counts.keys()):
-            if method not in ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD']:
-                method_options += f'<option value="{html.escape(method)}">{html.escape(method)}</option>'
-        
-        # Generate status options safely
-        status_options = ""
-        for status in sorted(status_counts.keys()):
-            status_options += f'<option value="{status}">{status}</option>'
-        
-        html_template = f"""<!DOCTYPE html>
+    # Create JSON data for JavaScript
+    api_calls_json = json.dumps(api_calls, indent=2)
+    
+    # Fix the line that referenced self.api_calls
+    other_calls = total_calls - successful_calls - error_calls
+    
+    html_template = f"""
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -379,15 +289,6 @@ class HTMLReportGenerator:
             border: 1px solid #ddd;
         }}
         
-        .error-message {{
-            background: #f8d7da;
-            color: #721c24;
-            padding: 15px;
-            margin: 20px;
-            border-radius: 5px;
-            border: 1px solid #f5c6cb;
-        }}
-        
         @media (max-width: 768px) {{
             .controls {{
                 flex-direction: column;
@@ -429,7 +330,7 @@ class HTMLReportGenerator:
                 <div class="stat-label">Errors</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number warning">{len(self.api_calls) - successful_calls - error_calls}</div>
+                <div class="stat-number warning">{other_calls}</div>
                 <div class="stat-label">Other</div>
             </div>
         </div>
@@ -446,7 +347,7 @@ class HTMLReportGenerator:
                     <option value="PATCH">PATCH</option>
                     <option value="OPTIONS">OPTIONS</option>
                     <option value="HEAD">HEAD</option>
-                    {method_options}
+                    {''.join([f'<option value="{method}">{method}</option>' for method in sorted(method_counts.keys()) if method not in ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD']])}
                 </select>
             </div>
             
@@ -454,7 +355,7 @@ class HTMLReportGenerator:
                 <label for="statusFilter">Status:</label>
                 <select id="statusFilter">
                     <option value="">All Status</option>
-                    {status_options}
+                    {''.join([f'<option value="{status}">{status}</option>' for status in sorted(status_counts.keys())])}
                 </select>
             </div>
             
@@ -494,148 +395,118 @@ class HTMLReportGenerator:
     </div>
     
     <script>
-        try {{
-            // API calls data - parse the escaped JSON
-            const apiCallsJson = `{api_calls_json}`;
-            const apiCalls = JSON.parse(apiCallsJson);
-            let filteredCalls = [...apiCalls];
+        // API calls data
+        const apiCalls = {api_calls_json};
+        let filteredCalls = [...apiCalls];
+        
+        // DOM elements
+        const methodFilter = document.getElementById('methodFilter');
+        const statusFilter = document.getElementById('statusFilter');
+        const urlFilter = document.getElementById('urlFilter');
+        const tableBody = document.getElementById('apiTableBody');
+        const modal = document.getElementById('detailModal');
+        const modalContent = document.getElementById('modalContent');
+        const closeModal = document.querySelector('.close');
+        
+        // Event listeners
+        methodFilter.addEventListener('change', applyFilters);
+        statusFilter.addEventListener('change', applyFilters);
+        urlFilter.addEventListener('input', applyFilters);
+        closeModal.addEventListener('click', () => modal.style.display = 'none');
+        window.addEventListener('click', (e) => {{
+            if (e.target === modal) modal.style.display = 'none';
+        }});
+        
+        // Apply filters
+        function applyFilters() {{
+            const methodValue = methodFilter.value;
+            const statusValue = statusFilter.value;
+            const urlValue = urlFilter.value.toLowerCase();
             
-            // DOM elements
-            const methodFilter = document.getElementById('methodFilter');
-            const statusFilter = document.getElementById('statusFilter');
-            const urlFilter = document.getElementById('urlFilter');
-            const tableBody = document.getElementById('apiTableBody');
-            const modal = document.getElementById('detailModal');
-            const modalContent = document.getElementById('modalContent');
-            const closeModal = document.querySelector('.close');
-            
-            // Event listeners
-            methodFilter.addEventListener('change', applyFilters);
-            statusFilter.addEventListener('change', applyFilters);
-            urlFilter.addEventListener('input', applyFilters);
-            closeModal.addEventListener('click', () => modal.style.display = 'none');
-            window.addEventListener('click', (e) => {{
-                if (e.target === modal) modal.style.display = 'none';
+            filteredCalls = apiCalls.filter(call => {{
+                const methodMatch = !methodValue || call.method === methodValue;
+                const statusMatch = !statusValue || call.status.toString() === statusValue;
+                const urlMatch = !urlValue || call.url.toLowerCase().includes(urlValue);
+                
+                return methodMatch && statusMatch && urlMatch;
             }});
             
-            // Apply filters
-            function applyFilters() {{
-                const methodValue = methodFilter.value;
-                const statusValue = statusFilter.value;
-                const urlValue = urlFilter.value.toLowerCase();
-                
-                filteredCalls = apiCalls.filter(call => {{
-                    const methodMatch = !methodValue || (call.method && call.method === methodValue);
-                    const statusMatch = !statusValue || (call.status && call.status.toString() === statusValue);
-                    const urlMatch = !urlValue || (call.url && call.url.toLowerCase().includes(urlValue));
-                    
-                    return methodMatch && statusMatch && urlMatch;
-                }});
-                
-                renderTable();
-            }}
+            renderTable();
+        }}
+        
+        // Render table
+        function renderTable() {{
+            tableBody.innerHTML = '';
             
-            // Safely get value from object
-            function safeGet(obj, key, defaultValue = '') {{
-                return obj && obj[key] !== undefined ? obj[key] : defaultValue;
-            }}
-            
-            // Render table
-            function renderTable() {{
-                tableBody.innerHTML = '';
+            filteredCalls.forEach((call, index) => {{
+                const row = document.createElement('tr');
                 
-                if (filteredCalls.length === 0) {{
-                    const row = document.createElement('tr');
-                    row.innerHTML = '<td colspan="7" style="text-align: center; padding: 20px;">No API calls match the current filters</td>';
-                    tableBody.appendChild(row);
-                    return;
-                }}
+                const timestamp = new Date(call.timestamp).toLocaleString();
+                const methodClass = `method-${{call.method.toLowerCase()}}`;
+                const statusClass = `status-${{Math.floor(call.status / 100)}}xx`;
+                const responsePreview = call.responseBody ? 
+                    call.responseBody.substring(0, 100) + (call.responseBody.length > 100 ? '...' : '') : 
+                    'No content';
                 
-                filteredCalls.forEach((call, index) => {{
-                    const row = document.createElement('tr');
-                    
-                    const timestamp = call.timestamp ? new Date(call.timestamp).toLocaleString() : 'N/A';
-                    const method = safeGet(call, 'method', 'UNKNOWN');
-                    const methodClass = `method-${{method.toLowerCase()}}`;
-                    const status = safeGet(call, 'status', 0);
-                    const statusText = safeGet(call, 'statusText', '');
-                    const statusClass = `status-${{Math.floor(status / 100)}}xx`;
-                    const url = safeGet(call, 'url', '');
-                    const mimeType = safeGet(call, 'mimeType', 'N/A');
-                    const responseBody = safeGet(call, 'responseBody', '');
-                    const responsePreview = responseBody ? 
-                        responseBody.substring(0, 100) + (responseBody.length > 100 ? '...' : '') : 
-                        'No content';
-                    
-                    row.innerHTML = `
-                        <td>${{timestamp}}</td>
-                        <td><span class="method-badge ${{methodClass}}">${{method}}</span></td>
-                        <td class="url-cell">${{url}}</td>
-                        <td><span class="status-badge ${{statusClass}}">${{status}} ${{statusText}}</span></td>
-                        <td>${{mimeType}}</td>
-                        <td class="response-preview">${{responsePreview}}</td>
-                        <td><button class="expand-btn" onclick="showDetails(${{index}})">View Details</button></td>
-                    `;
-                    
-                    tableBody.appendChild(row);
-                }});
-            }}
-            
-            // Show detailed view
-            function showDetails(index) {{
-                const call = filteredCalls[index];
-                const details = `
-                    <h3>Request Details</h3>
-                    <p><strong>Method:</strong> ${{safeGet(call, 'method', 'N/A')}}</p>
-                    <p><strong>URL:</strong> ${{safeGet(call, 'url', 'N/A')}}</p>
-                    <p><strong>Timestamp:</strong> ${{call.timestamp ? new Date(call.timestamp).toLocaleString() : 'N/A'}}</p>
-                    <p><strong>Request ID:</strong> ${{safeGet(call, 'requestId', 'N/A')}}</p>
-                    
-                    ${{call.requestData ? `
-                    <h3>Request Data</h3>
-                    <div class="json-viewer">${{call.requestData}}</div>
-                    ` : ''}}
-                    
-                    ${{call.requestHeaders && Object.keys(call.requestHeaders).length > 0 ? `
-                    <h3>Request Headers</h3>
-                    <div class="json-viewer">${{JSON.stringify(call.requestHeaders, null, 2)}}</div>
-                    ` : ''}}
-                    
-                    <h3>Response Details</h3>
-                    <p><strong>Status:</strong> ${{safeGet(call, 'status', 'N/A')}} ${{safeGet(call, 'statusText', '')}}</p>
-                    <p><strong>Content Type:</strong> ${{safeGet(call, 'mimeType', 'N/A')}}</p>
-                    
-                    ${{call.headers && Object.keys(call.headers).length > 0 ? `
-                    <h3>Response Headers</h3>
-                    <div class="json-viewer">${{JSON.stringify(call.headers, null, 2)}}</div>
-                    ` : ''}}
-                    
-                    <h3>Response Body</h3>
-                    <div class="json-viewer">${{safeGet(call, 'responseBody', 'No content')}}</div>
+                row.innerHTML = `
+                    <td>${{timestamp}}</td>
+                    <td><span class="method-badge ${{methodClass}}">${{call.method}}</span></td>
+                    <td class="url-cell">${{call.url}}</td>
+                    <td><span class="status-badge ${{statusClass}}">${{call.status}} ${{call.statusText}}</span></td>
+                    <td>${{call.mimeType}}</td>
+                    <td class="response-preview">${{responsePreview}}</td>
+                    <td><button class="expand-btn" onclick="showDetails(${{index}})">View Details</button></td>
                 `;
                 
-                modalContent.innerHTML = details;
-                modal.style.display = 'block';
-            }}
-            
-            // Make showDetails globally available
-            window.showDetails = showDetails;
-            
-            // Initial render
-            renderTable();
-            
-        }} catch (error) {{
-            console.error('Error initializing API report:', error);
-            document.body.innerHTML = `
-                <div class="error-message">
-                    <h2>Error Loading Report</h2>
-                    <p>There was an error loading the API report data. Please check the console for more details.</p>
-                    <p>Error: ${{error.message}}</p>
-                </div>
-            `;
+                tableBody.appendChild(row);
+            }});
         }}
+        
+        // Show detailed view
+        function showDetails(index) {{
+            const call = filteredCalls[index];
+            const details = `
+                <h3>Request Details</h3>
+                <p><strong>Method:</strong> ${{call.method}}</p>
+                <p><strong>URL:</strong> ${{call.url}}</p>
+                <p><strong>Timestamp:</strong> ${{new Date(call.timestamp).toLocaleString()}}</p>
+                <p><strong>Request ID:</strong> ${{call.requestId}}</p>
+                
+                ${{call.requestData ? `
+                <h3>Request Data</h3>
+                <div class="json-viewer">${{call.requestData}}</div>
+                ` : ''}}
+                
+                ${{call.requestHeaders && Object.keys(call.requestHeaders).length > 0 ? `
+                <h3>Request Headers</h3>
+                <div class="json-viewer">${{JSON.stringify(call.requestHeaders, null, 2)}}</div>
+                ` : ''}}
+                
+                <h3>Response Details</h3>
+                <p><strong>Status:</strong> ${{call.status}} ${{call.statusText}}</p>
+                <p><strong>Content Type:</strong> ${{call.mimeType}}</p>
+                
+                <h3>Response Headers</h3>
+                <div class="json-viewer">${{JSON.stringify(call.headers, null, 2)}}</div>
+                
+                <h3>Response Body</h3>
+                <div class="json-viewer">${{call.responseBody || 'No content'}}</div>
+            `;
+            
+            modalContent.innerHTML = details;
+            modal.style.display = 'block';
+        }}
+        
+        // Initial render
+        renderTable();
     </script>
 </body>
-</html>"""
-        
-        return html_template
+</html>
+    """
+    
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(html_template)
+        return filename
+    except Exception as e:
+        raise Exception(f"Error generating HTML report: {e}")
