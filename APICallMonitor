@@ -1,253 +1,117 @@
-from selenium import webdriver
 import json
-import logging
 from datetime import datetime
-
-# Configure logging
-logger = logging.getLogger(__name__)
+import logging
+from typing import List, Dict, Any
+from selenium import webdriver
+from common import logger, api_logger
 
 class APICallMonitor:
-    def __init__(self, driver):
+    def __init__(self, driver: webdriver.Chrome):
         self.driver = driver
-        self.api_calls = []
-        self.processed_request_ids = set()  # Track processed requests to avoid duplicates
-        
-        # Create separate logger for API calls
-        self.api_logger = logging.getLogger('api_calls')
-        api_handler = logging.FileHandler('api_calls.log')
-        api_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-        self.api_logger.addHandler(api_handler)
-        self.api_logger.setLevel(logging.INFO)
-        
-        # Enable network tracking
+        self.api_calls: List[Dict[str, Any]] = []
+    
+    def start_monitoring(self) -> None:
+        """Enable performance logging to capture network events"""
         self.driver.execute_cdp_cmd('Network.enable', {})
-        logger.info("Network tracking enabled")
+        logger.info("Network monitoring enabled")
     
-    def start_monitoring(self):
-        """
-        Initialize monitoring - enable network tracking.
-        This method now properly initializes the monitoring system.
-        """
-        try:
-            # Clear any existing logs
-            self.driver.get_log("performance")
-            logger.info("API monitoring started - network tracking enabled")
-        except Exception as e:
-            logger.error(f"Error starting monitoring: {e}")
-    
-    def get_network_logs(self):
+    def get_network_logs(self) -> None:
         """Retrieve and parse network logs for API calls"""
         try:
             logs = self.driver.get_log('performance')
-            logger.info(f"Retrieved {len(logs)} performance logs")
-
             requests_data = {}
-            new_api_calls = 0
             
             for log in logs:
-                try:
-                    message = json.loads(log['message'])
-                    method = message['message']['method']
+                message = json.loads(log['message'])
+                if message['message']['method'] == 'Network.requestWillBeSent':
+                    request_id = message['message']['params']['requestId']
+                    request_info = message['message']['params']['request']
+                    requests_data[request_id] = {
+                        'method': request_info['method'],
+                        'url': request_info['url'],
+                        'headers': request_info.get('headers', {}),
+                        'postData': request_info.get('postData', '')
+                    }
+            
+            for log in logs:
+                message = json.loads(log['message'])
+                if message['message']['method'] == 'Network.responseReceived':
+                    response = message['message']['params']['response']
+                    request_id = message['message']['params']['requestId']
                     
-                    if method == 'Network.requestWillBeSent':
-                        request_id = message['message']['params']['requestId']
-                        request_info = message['message']['params']['request']
+                    if self.is_api_call(response):
+                        method = requests_data.get(request_id, {}).get('method', 'GET')
+                        request_url = requests_data.get(request_id, {}).get('url', response['url'])
                         
-                        # Store request data
-                        requests_data[request_id] = {
-                            'method': request_info['method'],
-                            'url': request_info['url'],
-                            'headers': request_info.get('headers', {}),
-                            'postData': request_info.get('postData', ''),
-                            'timestamp': message['message']['params']['timestamp']
+                        api_call_info = {
+                            'timestamp': datetime.now().isoformat(),
+                            'url': request_url,
+                            'method': method.upper(),
+                            'status': response['status'],
+                            'statusText': response['statusText'],
+                            'mimeType': response['mimeType'],
+                            'headers': response.get('headers', {}),
+                            'requestHeaders': requests_data.get(request_id, {}).get('headers', {}),
+                            'requestData': requests_data.get(request_id, {}).get('postData', ''),
+                            'requestId': request_id
                         }
                         
-                    elif method == 'Network.responseReceived':
-                        request_id = message['message']['params']['requestId']
-                        response = message['message']['params']['response']
+                        try:
+                            response_body = self.driver.execute_cdp_cmd('Network.getResponseBody', {'requestId': request_id})
+                            api_call_info['responseBody'] = response_body.get('body', '')
+                        except Exception as e:
+                            api_call_info['responseBody'] = f"Could not retrieve body: {str(e)}"
                         
-                        # Skip if already processed
-                        if request_id in self.processed_request_ids:
-                            continue
-                            
-                        # Check if this is an API call
-                        if self.is_api_call(response):
-                            self.processed_request_ids.add(request_id)
-                            new_api_calls += 1
-                            
-                            # Get request data
-                            request_data = requests_data.get(request_id, {})
-                            
-                            api_call_info = {
-                                'timestamp': datetime.fromtimestamp(
-                                    request_data.get('timestamp', message['message']['params']['timestamp'])
-                                ).isoformat(),
-                                'url': request_data.get('url', response['url']),
-                                'method': request_data.get('method', 'GET').upper(),
-                                'status': response['status'],
-                                'statusText': response['statusText'],
-                                'mimeType': response.get('mimeType', ''),
-                                'headers': response.get('headers', {}),
-                                'requestHeaders': request_data.get('headers', {}),
-                                'requestData': request_data.get('postData', ''),
-                                'requestId': request_id
-                            }
-                            
-                            # Try to get response body
-                            try:
-                                response_body = self.driver.execute_cdp_cmd('Network.getResponseBody', {'requestId': request_id})
-                                api_call_info['responseBody'] = response_body.get('body', '')
-                            except Exception as e:
-                                api_call_info['responseBody'] = f"Could not retrieve response body: {str(e)}"
-                            
-                            self.api_calls.append(api_call_info)
-                            self.log_api_call(api_call_info)
-                            
-                except Exception as e:
-                    logger.error(f"Error processing log entry: {e}")
-                    continue
-            
-            if new_api_calls > 0:
-                logger.info(f"Captured {new_api_calls} new API calls (Total: {len(self.api_calls)})")
-            else:
-                logger.debug("No new API calls found in this batch")
-                
+                        self.api_calls.append(api_call_info)
+                        self.log_api_call(api_call_info)
+        
         except Exception as e:
             logger.error(f"Error retrieving network logs: {e}")
     
-    def is_api_call(self, response):
+    def is_api_call(self, response: Dict[str, Any]) -> bool:
         """Determine if the response is likely an API call"""
-        try:
-            url = response['url'].lower()
-            mime_type = response.get('mimeType', '').lower()
-            
-            # Skip static resources
-            static_extensions = [
-                '.css', '.js', '.png', '.jpg', '.jpeg', '.gif', '.ico', 
-                '.svg', '.woff', '.woff2', '.ttf', '.eot', '.otf', '.pdf',
-                '.mp4', '.webm', '.ogg', '.mp3', '.wav'
-            ]
-            if any(url.endswith(ext) for ext in static_extensions):
-                return False
-                
-            # Skip common tracking domains
-            exclude_domains = ['google-analytics.com', 'googletagmanager.com', 
-                            'facebook.com', 'doubleclick.net']
-            if any(domain in url for domain in exclude_domains):
-                return False
-                
-            # Consider anything that's not static content as an API call
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error determining if response is API call: {e}")
-            return False
+        url = response['url'].lower()
+        mime_type = response.get('mimeType', '').lower()
+        
+        api_patterns = ['api/', '/api', 'json', 'ajax', 'rest/', '/rest', 'graphql', 'xhr']
+        static_extensions = ['.css', '.js', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.svg', '.woff', '.ttf']
+        
+        url_is_api = any(pattern in url for pattern in api_patterns)
+        mime_is_api = 'json' in mime_type or 'xml' in mime_type
+        is_static = any(url.endswith(ext) for ext in static_extensions)
+        
+        return (url_is_api or mime_is_api) and not is_static
     
-    def log_api_call(self, api_info):
+    def log_api_call(self, api_info: Dict[str, Any]) -> None:
         """Log API call information"""
-        try:
-            response_preview = str(api_info['responseBody'])[:200] if api_info['responseBody'] else 'No content'
-            
-            log_message = f"""
+        log_message = f"""
 API Call Detected:
   URL: {api_info['url']}
   Method: {api_info['method']}
   Status: {api_info['status']} {api_info['statusText']}
   Content-Type: {api_info['mimeType']}
   Timestamp: {api_info['timestamp']}
-  Response Preview: {response_preview}{'...' if len(str(api_info['responseBody'])) > 200 else ''}
+  Response Body: {api_info['responseBody'][:200]}{'...' if len(str(api_info['responseBody'])) > 200 else ''}
   ---
 """
-            self.api_logger.info(log_message)
-            logger.info(f"API call logged: {api_info['method']} {api_info['url']} - Status: {api_info['status']}")
-            
-        except Exception as e:
-            logger.error(f"Error logging API call: {e}")
+        api_logger.info(log_message)
+        logger.info(f"API call logged: {api_info['method']} {api_info['url']} - Status: {api_info['status']}")
     
-    def save_api_calls_to_file(self, filename='api_calls.json'):
+    def save_api_calls_to_file(self, filename: str = 'api_calls.json') -> None:
         """Save all captured API calls to a JSON file"""
         try:
-            if not self.api_calls:
-                logger.warning("No API calls to save")
-                return False
-                
-            logger.info(f"Saving {len(self.api_calls)} API calls to {filename}")
-            with open(filename, 'w', encoding='utf-8') as f:
-                json.dump(self.api_calls, f, indent=2, ensure_ascii=False)
+            with open(filename, 'w') as f:
+                json.dump(self.api_calls, f, indent=2)
             logger.info(f"API calls saved to {filename}")
-            return True
-            
         except Exception as e:
             logger.error(f"Error saving API calls to file: {e}")
-            return False
     
-    def get_api_calls(self):
-        """Return the list of captured API calls"""
-        return self.api_calls
-    
-    def clear_api_calls(self):
-        """Clear the captured API calls"""
-        self.api_calls = []
-        self.processed_request_ids.clear()
-        logger.info("API calls cleared")
-    
-    def print_summary(self):
+    def print_summary(self) -> None:
         """Print a summary of captured API calls"""
         print(f"\n=== API Calls Summary ===")
         print(f"Total API calls captured: {len(self.api_calls)}")
         
         if self.api_calls:
             print("\nAPI Endpoints:")
-            for i, call in enumerate(self.api_calls, 1):
-                print(f"  {i}. {call['method']} {call['url']} - {call['status']} {call['statusText']}")
-        
-        # Statistics
-        if self.api_calls:
-            successful_calls = len([call for call in self.api_calls if 200 <= call['status'] < 300])
-            error_calls = len([call for call in self.api_calls if call['status'] >= 400])
-            redirect_calls = len([call for call in self.api_calls if 300 <= call['status'] < 400])
-            
-            print(f"\nStatistics:")
-            print(f"  Successful (2xx): {successful_calls}")
-            print(f"  Redirects (3xx): {redirect_calls}")
-            print(f"  Client Errors (4xx): {len([call for call in self.api_calls if 400 <= call['status'] < 500])}")
-            print(f"  Server Errors (5xx): {len([call for call in self.api_calls if call['status'] >= 500])}")
-            
-            # Show unique domains
-            domains = set()
             for call in self.api_calls:
-                try:
-                    from urllib.parse import urlparse
-                    domain = urlparse(call['url']).netloc
-                    domains.add(domain)
-                except:
-                    pass
-            
-            if domains:
-                print(f"\nDomains called: {', '.join(sorted(domains))}")
-        else:
-            print("\nNo API calls were captured. This might indicate:")
-            print("  - The application doesn't make API calls")
-            print("  - The API detection criteria are too strict")
-            print("  - There was an issue with network monitoring")
-    
-    def get_stats(self):
-        """Return statistics about captured API calls"""
-        if not self.api_calls:
-            return {
-                'total': 0,
-                'successful': 0,
-                'errors': 0,
-                'redirects': 0
-            }
-        
-        successful = len([call for call in self.api_calls if 200 <= call['status'] < 300])
-        errors = len([call for call in self.api_calls if call['status'] >= 400])
-        redirects = len([call for call in self.api_calls if 300 <= call['status'] < 400])
-        
-        return {
-            'total': len(self.api_calls),
-            'successful': successful,
-            'errors': errors,
-            'redirects': redirects
-        }
+                print(f"  {call['method']} {call['url']} - {call['status']}")
